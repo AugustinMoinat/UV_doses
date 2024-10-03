@@ -1,0 +1,216 @@
+'''
+ Extract the TEMIS UV index or UV dose data for a given location.
+
+ From a 'europe' file extraction takes a few seconds,
+ from a 'world' file extraction may take some 30 seconds.
+
+ usage:  uvnctimeseries.py -h
+
+ source: https://www.temis.nl/uvradiation/
+
+'''
+
+import numpy as np
+import netCDF4 as nc
+import sys
+import os
+
+import warnings
+
+warnings.simplefilter(action='ignore', category=DeprecationWarning)
+warnings.simplefilter(action='ignore', category=FutureWarning)
+warnings.simplefilter(action='ignore', category=RuntimeWarning)
+warnings.simplefilter(action='ignore', category=UserWarning)
+
+
+# ==================================================================
+
+
+# ======================
+
+def CheckCoordinates(lon, lat, ncFile):
+    '''
+     Make sure that the given coordinate is available within the file,
+     which either covers 'world' or 'europe'.
+
+     It returns the grid cell indices to use in the data extraction,
+     taking the data coverage into account.
+    '''
+
+    with nc.Dataset(ncFile, 'r') as src:
+
+        # The data coverage is specified by global attributes:
+
+        lon_min = src.geospatial_lon_min
+        lon_max = src.geospatial_lon_max
+        lat_min = src.geospatial_lat_min
+        lat_max = src.geospatial_lat_max
+
+        if (lon > lon_max or lon < lon_min):
+            print(' *** Error: longitude should be in the range [%s:%s]' % (lon_min, lon_max))
+            sys.exit(1)
+
+        if (lat > lat_max or lat < lat_min):
+            print(' *** Error: latitude should be in the range [%s:%s]' % (lat_min, lat_max))
+            sys.exit(1)
+
+        # Find the offset index of both coordinates;
+        # for data that covers the 'world' both are zero.
+
+        ilon_offset = src.groups['PRODUCT'].variables['longitude_index'][0]
+        ilat_offset = src.groups['PRODUCT'].variables['latitude_index'][0]
+
+    # Grid cell indices including the
+
+    ilon = getIlon(lon) - ilon_offset
+    ilat = getIlat(lat) - ilat_offset
+
+    return ilon, ilat
+
+
+# ==================================================================
+
+# Conversion routines of latitude and longitude coordinates in degrees
+# to grid cell indices. The index counting is 0-based, that is:
+# * longitudes range from 0 (West) to 1439 (East)
+# * latitudes  range from 0 (South) to 719 (North)
+# and thus covers the full world.
+# The grid cells are dlon by dlat = 0.25 by 0.25 degrees
+
+def getIlon(lon):
+    dlon = 360.0 / 1440.0
+    return round((lon + 180.0 - dlon / 2.0) / dlon)
+
+
+def getIlat(lat):
+    dlat = 180.0 / 720.0
+    return round((lat + 90.0 - dlat / 2.0) / dlat)
+
+
+# ==================================================================
+# Main part
+# ==================================================================
+
+if __name__ == "__main__":
+
+    # Configuration
+    # -------------
+
+    # import argparse
+    #
+    # dataUrl = "https://www.temis.nl/uvradiation/UVarchive/uvncfiles.php"
+    #
+    # parser = argparse.ArgumentParser(description= \
+    #                                      'Extract the TEMIS UV index or UV dose data for a given location ' + \
+    #                                      'from a either a file with one year or data or a climatology file, ' + \
+    #                                      'which can be downloaded from %s || The output is written to the screen.' % (
+    #                                          dataUrl))
+    #
+    # lonStr = 'longitude, decimal degrees in range [-180:+180]  '
+    # parser.add_argument('lon', metavar='LON', help=lonStr)
+    #
+    # latStr = 'latitude, decimal degrees in range [-90:+90]'
+    # parser.add_argument('lat', metavar='LAT', help=latStr)
+    #
+    # fileStr = 'netCDF file with the UV index or UV dose data'
+    # parser.add_argument('file', metavar='FILE', help=fileStr)
+    #
+    # args = parser.parse_args()
+
+    # Check arguments
+    # ---------------
+
+    # Check whether the given data file exists
+
+    ncFile = 'uvdec2023_world.nc'
+    out_file = 'uv_max.nc'
+
+    if not os.path.isfile(ncFile):
+        print(' *** Error: given netCDF file does not exist')
+        sys.exit(1)
+
+    src = nc.Dataset(ncFile, 'r')
+
+    print(src.groups['PRODUCT'])
+    print(src.groups['PRODUCT'].dimensions)
+    print(src.groups['PRODUCT'].variables)
+
+    lat = 45
+    lon = 0
+    ilat = getIlat(lat)
+    ilon = getIlon(lon)
+
+    # Create the new NetCDF file
+    dst = nc.Dataset(out_file, 'w')
+
+    # 1. Copy latitude and longitude dimensions
+    dst.createDimension('latitude', len(src.groups['PRODUCT'].dimensions['latitude']))
+    dst.createDimension('longitude', len(src.groups['PRODUCT'].dimensions['longitude']))
+    dst.createDimension('month', 12)  # Create new dimension for months (12 months in a year)
+
+    # 2. Copy latitude, longitude, and index variables
+    # Copy latitude
+    lat_src = src.groups['PRODUCT'].variables['latitude']
+    lat_dst = dst.createVariable('latitude', lat_src.datatype, ('latitude',))
+    lat_dst[:] = lat_src[:]
+
+    # Copy longitude
+    lon_src = src.groups['PRODUCT'].variables['longitude']
+    lon_dst = dst.createVariable('longitude', lon_src.datatype, ('longitude',))
+    lon_dst[:] = lon_src[:]
+
+    # Copy latitude_index and longitude_index
+    lat_idx_src = src.groups['PRODUCT'].variables['latitude_index']
+    lat_idx_dst = dst.createVariable('latitude_index', lat_idx_src.datatype, ('latitude',))
+    lat_idx_dst[:] = lat_idx_src[:]
+
+    lon_idx_src = src.groups['PRODUCT'].variables['longitude_index']
+    lon_idx_dst = dst.createVariable('longitude_index', lon_idx_src.datatype, ('longitude',))
+    lon_idx_dst[:] = lon_idx_src[:]
+
+    # 3. Create a variable for month names
+    month_names = np.array(['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                            'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'], dtype='S3')
+    months_var = dst.createVariable('month_names', 'S1', ('month',))
+    months_var[:] = month_names[:]  # Convert to char array (S1 format)
+
+    # 4. Coalesce daily data into monthly data (assuming the original data is for 365 days)
+    def monthly_maximum(daily_data):
+        # Create an empty array to store the monthly aggregated data
+        monthly_data = np.zeros((12, daily_data.shape[1], daily_data.shape[2]))
+
+        # Indices for days corresponding to each month
+
+        months_lengths = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+        months_index_start = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        months_index_end = [30, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+        for i, n in enumerate(months_lengths):
+            if i < 11:
+                months_index_start[i + 1] = months_index_start[i] + n
+                months_index_end[i + 1] = months_index_end[i] + n
+        month_day_indices = zip(months_index_start, months_index_end)
+
+        # Aggregate by month (e.g., by averaging)
+        for month, (start, end) in enumerate(month_day_indices):
+            monthly_data[month, :, :] = np.max(daily_data[start:end, :, :], axis=0)
+
+        return monthly_data
+
+
+    # Copy and coalesce the uvd_clear and uvd_cloudy data
+    uvd_clear_src = src.groups['PRODUCT'].variables['uvd_clear']
+    uvd_clear_dst = dst.createVariable('uvd_clear', 'f4', ('month', 'latitude', 'longitude'))
+    uvd_clear_dst[:] = monthly_maximum(uvd_clear_src[:])
+
+    uvd_cloudy_src = src.groups['PRODUCT'].variables['uvd_cloudy']
+    uvd_cloudy_dst = dst.createVariable('uvd_cloudy', 'f4', ('month', 'latitude', 'longitude'))
+    uvd_cloudy_dst[:] = monthly_maximum(uvd_cloudy_src[:])
+
+    # Close both files
+    src.close()
+    dst.close()
+
+    # --------
+
+    sys.exit(0)
