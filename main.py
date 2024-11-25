@@ -11,7 +11,7 @@
 '''
 
 from estimator.compute_uv_max.create_month_file import compute_month_max
-
+from display_app.display import DisplayApp
 
 
 # ==================================================================
@@ -19,4 +19,4 @@ from estimator.compute_uv_max.create_month_file import compute_month_max
 # ==================================================================
 
 if __name__ == "__main__":
-    compute_month_max()
+    DisplayApp().run()

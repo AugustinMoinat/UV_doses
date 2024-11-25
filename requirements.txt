@@ -1,0 +1,5 @@
+netCDF4
+numpy
+pandas
+pytest
+kivy
